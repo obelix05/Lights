@@ -3,9 +3,13 @@
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <ESP8266WebServer.h>
-#include <NeoPixelBus.h>
+#include <FastLED.h>
 #include <WiFiManager.h>
 #include <EEPROM.h>
+
+#define NUM_LEDS 9
+
+CRGB leds[NUM_LEDS], leds2[NUM_LEDS];
 
 #define lightsCount 4
 #define pixelCount 144
@@ -26,12 +30,12 @@ byte mac[6];
 
 ESP8266WebServer server(80);
 
-RgbColor red = RgbColor(255, 0, 0);
-RgbColor green = RgbColor(0, 255, 0);
-RgbColor white = RgbColor(255);
-RgbColor black = RgbColor(0);
+CRGB red = CRGB(255, 0, 0);
+CRGB green = CRGB(0, 255, 0);
+CRGB white = CRGB(255, 255, 255);
+CRGB black = CRGB(0, 0, 0);
 
-NeoPixelBus<NeoGrbFeature, Neo800KbpsMethod> strip(pixelCount);
+
 
 void convert_ct(uint8_t light) {
 
@@ -69,16 +73,13 @@ void handleNotFound() {
   server.send(404, "text/plain", message);
 }
 
-void infoLight(RgbColor color) {
+void infoLight(CRGB color) {
   // Flash the strip in the selected color. White = booted, green = WLAN connected, red = WLAN could not connect
-  for (int i = 0; i < pixelCount; i++)
-  {
-    strip.SetPixelColor(i, color);
-    strip.Show();
-    delay(10);
-    strip.SetPixelColor(i, black);
-    strip.Show();
-  }
+  fill_solid(leds, NUM_LEDS, color);
+  FastLED.show();
+  FastLED.delay(10);
+  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  FastLED.show();
 }
 
 
@@ -123,9 +124,10 @@ void lightEngine() {
         }
         for (int j = 0; j < pixelCount / lightsCount ; j++)
         {
-          strip.SetPixelColor(j + i * pixelCount / lightsCount, RgbColor((int)current_wwa[i][0], (int)current_wwa[i][1], (int)current_wwa[i][2]));
+          leds[j + i * pixelCount / lightsCount] = CRGB((int)current_wwa[i][0], (int)current_wwa[i][1], (int)current_wwa[i][2]);
+//          strip.SetPixelColor(j + i * pixelCount / lightsCount, RgbColor((int)current_wwa[i][0], (int)current_wwa[i][1], (int)current_wwa[i][2]));
         }
-        strip.Show();
+        FastLED.show();
       }
     } else {
       if (current_wwa[i][0] != 0 || current_wwa[i][1] != 0 || current_wwa[i][2] != 0) {
@@ -136,21 +138,24 @@ void lightEngine() {
         }
         for (int j = 0; j < pixelCount / lightsCount ; j++)
         {
-          strip.SetPixelColor(j + i * pixelCount / lightsCount, RgbColor((int)current_wwa[i][0], (int)current_wwa[i][1], (int)current_wwa[i][2]));
+          leds[j + i * pixelCount / lightsCount] = CRGB((int)current_wwa[i][0], (int)current_wwa[i][1], (int)current_wwa[i][2]);
+//          strip.SetPixelColor(j + i * pixelCount / lightsCount, RgbColor((int)current_wwa[i][0], (int)current_wwa[i][1], (int)current_wwa[i][2]));
         }
-        strip.Show();
+        FastLED.show();
       }
     }
   }
   if (in_transition) {
-    delay(6);
+    FastLED.delay(6);
     in_transition = false;
   }
 }
 
 void setup() {
-  strip.Begin();
-  strip.Show();
+  FastLED.addLeds<WS2812B, 4, GRB>(leds, NUM_LEDS).setCorrection( TypicalSMD5050 );
+  
+//  strip.Begin();
+//  strip.Show();
   EEPROM.begin(512);
 
 #ifdef USE_STATIC_IP
@@ -263,7 +268,7 @@ void setup() {
   });
 
   server.on("/detect", []() {
-    server.send(200, "text/plain", "{\"hue\": \"strip\",\"lights\": " + (String)lightsCount + ",\"modelid\": \"LTW001\",\"mac\": \"" + String(mac[5], HEX) + ":"  + String(mac[4], HEX) + ":" + String(mac[3], HEX) + ":" + String(mac[2], HEX) + ":" + String(mac[1], HEX) + ":" + String(mac[0], HEX) + "\"}");
+    server.send(200, "text/plain", "{\"hue\": \"strip\",\"lights\": " + (String)lightsCount + ",\"modelid\": \"LCT015\",\"mac\": \"" + String(mac[5], HEX) + ":"  + String(mac[4], HEX) + ":" + String(mac[3], HEX) + ":" + String(mac[2], HEX) + ":" + String(mac[1], HEX) + ":" + String(mac[0], HEX) + "\"}");
   });
 
   server.on("/", []() {
@@ -275,7 +280,7 @@ void setup() {
       }
     }
 
-    for (int light = 0; light < lightsCount; light++) {
+    for (int light = 0; light < lightsCount; light++)   {
       if (server.hasArg("scene")) {
         if (server.arg("bri") == "" && server.arg("ct") == "") {
           if (  EEPROM.read(2) != server.arg("scene").toInt()) {
