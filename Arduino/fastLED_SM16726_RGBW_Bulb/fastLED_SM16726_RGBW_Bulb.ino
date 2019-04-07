@@ -1,15 +1,23 @@
+#define FASTLED_ESP8266_RAW_PIN_ORDER
+
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <ESP8266WebServer.h>
-
-#define FASTLED_ESP8266_RAW_PIN_ORDER
-
 #include <FastLED.h>
 #include <WiFiManager.h>
 #include <EEPROM.h>
 #include "Arduino.h"
+
+#define RECV_PIN 6
+IRrecv IRrecv(RECV_PIN);
+decode_results results;
+#define MAX_TIME 150
+long lastPressTime = 0;
+bool ir_interrupted = 0;
 
 #define NUM_LEDS 9 // 1 led with 3 colors thanks to CRGB
 
@@ -18,32 +26,23 @@
 
 // How many LED Colors are there including CW and/or WW
 // fastLED only controls rgb, not w
-#define LED_COLORS 3 
-
+#define LED_COLORS 3
+#define NUM_LIGHTS 3
 
 // FastLED settings, data and clock pin for spi communication
 // Note that the protocol for SM16716 is the same for the SM16726
-#define DATA_PIN 4
-#define DATA_PIN2 5
+#define DATA_PIN_RGB 4
+#define DATA_PIN_WWA 5
 //#define CLOCK_PIN 4
 #define COLOR_ORDER GRB
 #define LED_TYPE WS2812B
 #define CORRECTION TypicalSMD5050
 
-// May get messed up with SPI CLOCK_PIN with this particular bulb
-#define use_hardware_switch false // To control on/off state and brightness using GPIO/Pushbutton, set this value to true.
-//For GPIO based on/off and brightness control, it is mandatory to connect the following GPIO pins to ground using 10k resistor
-//#define button1_pin 4 // on and brightness up
-//#define button2_pin 5 // off and brightness down
-
-// !!!!!!!! Experimental !!!!!!!!!! 
-// True - add cold white LEDs according to luminance/ whiteness in xy color selector
-// False - Don't
-#define W_ON_XY false
-
-// How many colors are controlled by basic PWM, not fastLED
-#define PWM_CHANNELS 1
-uint8_t pins[PWM_CHANNELS] = {5};
+int strip[NUM_LIGHTS][2] = {
+    {0, 2},
+    {3, 5},
+    {6, 8}
+};
 
 //#define USE_STATIC_IP //! uncomment to enable Static IP Adress
 #ifdef USE_STATIC_IP
@@ -52,13 +51,15 @@ IPAddress gateway_ip ( 192,  168,   0,   1); // Router IP
 IPAddress subnet_mask(255, 255, 255,   0);
 #endif
 
+#define COLORMODE_RGB 0
+#define COLORMODE_XY 1
+#define COLORMODE_CT 2
+#define COLORMODE_HUE 3
 
-
-uint8_t rgbw[3], wwa[3], color_mode, scene;
-bool light_state, in_transition;
-int transitiontime, ct, hue, bri, sat;
-float step_level[4], current_rgbw
-[3], current_wwa[3], x, y;
+uint8_t rgb[NUM_LIGHTS][3], wwa[NUM_LIGHTS][3], color_mode[NUM_LIGHTS], scene;
+bool light_state[NUM_LIGHTS], in_transition[NUM_LIGHTS];
+int transitiontime, ct[NUM_LIGHTS], hue[NUM_LIGHTS], bri[NUM_LIGHTS], sat[NUM_LIGHTS];
+float step_level_rgb[NUM_LIGHTS][3], step_level_wwa[NUM_LIGHTS][3], current_rgb[NUM_LIGHTS][3], current_wwa[NUM_LIGHTS][3], x[NUM_LIGHTS], y[NUM_LIGHTS];
 byte mac[6];
 
 ESP8266WebServer server(80);
@@ -70,88 +71,18 @@ CRGB white = CRGB(255, 255, 255);
 CRGB black = CRGB(0, 0, 0);
 
 // Set up array for use by FastLED
-CRGB leds[NUM_LEDS];
-CRGB leds2[NUM_LEDS];
+CRGB leds_rgb[NUM_LEDS];
+CRGB leds_wwa[NUM_LEDS];
 
-void convert_hue()
+void convert_xy(uint8_t light)
 {
-  double      hh, p, q, t, ff, s, v;
-  long        i;
-
-  
-  s = sat / 255.0;
-  v = bri / 255.0;
-
-  // Test for intensity for white LEDs
-  float I = (float)(sat + bri) / 2;
-
-  if (s <= 0.0) {      // < is bogus, just shuts up warnings
-    rgbw[0] = v;
-    rgbw[1] = v;
-    rgbw[2] = v;
-    return;
-  }
-  hh = hue;
-  if (hh >= 65535.0) hh = 0.0;
-  hh /= 11850, 0;
-  i = (long)hh;
-  ff = hh - i;
-  p = v * (1.0 - s);
-  q = v * (1.0 - (s * ff));
-  t = v * (1.0 - (s * (1.0 - ff)));
-
-  switch (i) {
-    case 0:
-      rgbw[0] = v * 255.0;
-      rgbw[1] = t * 255.0;
-      rgbw[2] = p * 255.0;
-      rgbw[3] = I;
-      break;
-    case 1:
-      rgbw[0] = q * 255.0;
-      rgbw[1] = v * 255.0;
-      rgbw[2] = p * 255.0;
-      rgbw[3] = I;
-      break;
-    case 2:
-      rgbw[0] = p * 255.0;
-      rgbw[1] = v * 255.0;
-      rgbw[2] = t * 255.0;
-      rgbw[3] = I;
-      break;
-
-    case 3:
-      rgbw[0] = p * 255.0;
-      rgbw[1] = q * 255.0;
-      rgbw[2] = v * 255.0;
-      rgbw[3] = I;
-      break;
-    case 4:
-      rgbw[0] = t * 255.0;
-      rgbw[1] = p * 255.0;
-      rgbw[2] = v * 255.0;
-      rgbw[3] = I;
-      break;
-    case 5:
-    default:
-      rgbw[0] = v * 255.0;
-      rgbw[1] = p * 255.0;
-      rgbw[2] = q * 255.0;
-      rgbw[3] = I;
-      break;
-  }
-
-}
-
-void convert_xy()
-{
-  int optimal_bri = bri;
+  int optimal_bri = bri[light];
   if (optimal_bri < 5) {
     optimal_bri = 5;
   }
-  float Y = y;
-  float X = x;
-  float Z = 1.0f - x - y;
+  float Y = y[light];
+  float X = x[light];
+  float Z = 1.0f - x[light] - y[light];
 
   // sRGB D65 conversion
   float r =  X * 3.2406f - Y * 1.5372f - Z * 0.4986f;
@@ -193,60 +124,48 @@ void convert_xy()
   ri = ri < 0.0f ? 0.0f : ri;
   gi = gi < 0.0f ? 0.0f : gi;
   bi = bi < 0.0f ? 0.0f : bi;
-  float w = 0.0f;
 
-  // Getting luminance from value to add white leds
-  // https://stackoverflow.com/questions/40312216/converting-rgb-to-rgbw
-  if (W_ON_XY == true) {
-    float tM = max(ri, (max(gi, bi)));
-  
-    if(tM == 0) {
-      rgbw[0] = 0; rgbw[1] = 0; rgbw[2] = 0; rgbw[3] = 0;
-    }
-  
-    // Figure out what the colour with 100% hue is
-    float multiplier = 255.0f / tM;
-    float hR = ri * multiplier;
-    float hG = gi * multiplier;
-    float hB = bi * multiplier;
-  
-    // Calculate whiteness of color
-    float M = max(hR, max(hG,hB));
-    float m = min(hR, min(hG,hB));
-    float Luminance = ((M+m) / 2.0f - 127.5f) * (255.0f/127.5f) / multiplier;
-    w = Luminance < 0.0f ? 0.0f : Luminance;
-    w = Luminance > 255.0f ? 255.0f : Luminance;
-  } else {
-    w = 0.0f;
-  }
+  rgb[light][0] = (int) (r * optimal_bri);
+  rgb[light][1] = (int) (g * optimal_bri);
+  rgb[light][2] = (int) (b * optimal_bri);
 
-  rgbw[0] = (int) (r * optimal_bri); rgbw[1] = (int) (g * optimal_bri); rgbw[2] = (int) (b * optimal_bri); rgbw[3] = (int) ((w * bri) /3);
+  wwa[light][0] = 0;
+  wwa[light][1] = 0;
+  wwa[light][2] = 0;
+
 }
 
-void convert_ct() {
+void convert_ct(uint8_t light) {
+  uint8 percent_warm;
+  uint8 percent_cold;
+  uint8 percent_amber;
 
-  int optimal_bri = int( 10 + bri / 1.04);
-  int hectemp = 10000 / ct;
-  int r, g, b;
-  if (hectemp <= 66) {
-    r = 255;
-    g = 99.4708025861 * log(hectemp) - 161.1195681661;
-    b = hectemp <= 19 ? 0 : (138.5177312231 * log(hectemp - 10) - 305.0447927307);
+  if (ct[light] < 400) {
+    percent_warm = ((ct[light] - 153) * 100) / 247;
+    percent_cold = 100 - percent_warm;
+    percent_amber = 0;
   } else {
-    r = 329.698727446 * pow(hectemp - 60, -0.1332047592);
-    g = 288.1221695283 * pow(hectemp - 60, -0.0755148492);
-    b = 255;
+    percent_cold = 0;
+    percent_warm = 100;
+    percent_amber = 100 - (500 - ct[light]);
   }
-  float w = 0;
-  uint8 percent_warm = ((ct - 150) * 100) / 350;
 
-  w = ((optimal_bri * (100 - percent_warm)) / 100) / 3;
+  wwa[light][1] = (bri[light] * percent_cold) / 100;
+  wwa[light][2] =  (bri[light] * percent_warm) / 100;
+  wwa[light][0] =  (bri[light] * percent_amber) / 100;
 
-  w = w > 255 ? 255 : w;
-  r = r > 255 ? 255 : r;
-  g = g > 255 ? 255 : g;
-  b = b > 255 ? 255 : b;
-  rgbw[0] = r * (bri / 255.0f); rgbw[1] = g * (bri / 255.0f); rgbw[2] = b * (bri / 255.0f); rgbw[3] = w;
+  rgb[light][0] = 0;
+  rgb[light][1] = 0;
+  rgb[light][2] = 0;
+}
+
+void encodeIR() {
+  uint64_t irresult = results.value;
+  for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
+    switch (irresult) {
+      case 0x12345678: rgb[light][0] = 255; rgb[light][1] = 0; rgb[light][2] = 0;
+    }
+  }
 }
 
 void handleNotFound() {
@@ -264,61 +183,51 @@ void handleNotFound() {
   server.send(404, "text/plain", message);
 }
 
-void infoLight(CRGB color) {
-  // Flash the strip in the selected color. White = booted, green = WLAN connected, red = WLAN could not connect
-  for(int i=0; i<NUM_LEDS; i++)
-  {
-    leds[i]= color;
-  }
-  
-  FastLED.show();
-  FastLED.delay(10);
-  leds[0] = CRGB::Black;
-  FastLED.show();
-}
-
-
-void apply_scene(uint8_t new_scene) {
+void apply_scene(uint8_t new_scene, uint8_t light) {
   if ( new_scene == 0) {
-    bri = 144; ct = 447; color_mode = 2; convert_ct();
+    bri[light] = 144; ct[light] = 447; color_mode[light] = 2; convert_ct(light);
   } else if ( new_scene == 1) {
-    bri = 254; ct = 346; color_mode = 2; convert_ct();
+    bri[light] = 254; ct[light] = 346; color_mode[light] = 2; convert_ct(light);
   } else if ( new_scene == 2) {
-    bri = 254; ct = 233; color_mode = 2; convert_ct();
+    bri[light] = 254; ct[light] = 233; color_mode[light] = 2; convert_ct(light);
   }  else if ( new_scene == 3) {
-    bri = 254; ct = 156; color_mode = 2; convert_ct();
+    bri[light] = 254; ct[light] = 156; color_mode[light] = 2; convert_ct(light);
   }  else if ( new_scene == 4) {
-    bri = 77; ct = 367; color_mode = 2; convert_ct();
+    bri[light] = 77; ct[light] = 367; color_mode[light] = 2; convert_ct(light);
   }  else if ( new_scene == 5) {
-    bri = 254; ct = 447; color_mode = 2; convert_ct();
+    bri[light] = 254; ct[light] = 447; color_mode[light] = 2; convert_ct(light);
   }  else if ( new_scene == 6) {
-    bri = 1; x = 0.561; y = 0.4042; color_mode = 1; convert_xy();
+    bri[light] = 1; x[light] = 0.561; y[light] = 0.4042; color_mode[light] = 1; convert_xy(light);
   }  else if ( new_scene == 7) {
-    bri = 203; x = 0.380328; y = 0.39986; color_mode = 1; convert_xy();
+    bri[light] = 203; x[light] = 0.380328; y[light] = 0.39986; color_mode[light] = 1; convert_xy(light);
   }  else if ( new_scene == 8) {
-    bri = 112; x = 0.359168; y = 0.28807; color_mode = 1; convert_xy();
+    bri[light] = 112; x[light] = 0.359168; y[light] = 0.28807; color_mode[light] = 1; convert_xy(light);
   }  else if ( new_scene == 9) {
-    bri = 142; x = 0.267102; y = 0.23755; color_mode = 1; convert_xy();
+    bri[light] = 142; x[light] = 0.267102; y[light] = 0.23755; color_mode[light] = 1; convert_xy(light);
   }  else if ( new_scene == 10) {
-    bri = 216; x = 0.393209; y = 0.29961; color_mode = 1; convert_xy();
+    bri[light] = 216; x[light] = 0.393209; y[light] = 0.29961; color_mode[light] = 1; convert_xy(light);
   }
 }
 
-void process_lightdata(float transitiontime) {
-//  transitiontime *= 17 - (pixelCount / 40); //every extra led add a small delay that need to be counted
-  if (color_mode == 1 && light_state == true) {
-    convert_xy();
-  } else if (color_mode == 2 && light_state == true) {
-    convert_ct();
-  } else if (color_mode == 3 && light_state == true) {
-    convert_hue();
+void process_lightdata(float transitiontime, uint8_t light) {
+  transitiontime *= 17 - (NUM_LEDS / 40); //every extra led add a small delay that need to be counted
+  if (!ir_interrupted) {
+    if (color_mode[light] == COLORMODE_XY && light_state[light] == true) {
+      convert_xy(light);
+    } else if (color_mode[light] == COLORMODE_CT && light_state[light] == true) {
+      convert_ct(light);
+    }
+  } else {
+    encodeIR();
   }
   transitiontime *= 16;
   for (uint8_t color = 0; color < LED_COLORS; color++) {
-    if (light_state) {
-      step_level[color] = ((float)rgbw[color] - current_rgbw[color]) / transitiontime;
+    if (light_state[light]) {
+      step_level_rgb[light][color] = ((float) rgb[light][color] - current_rgb[light][color]) / transitiontime;
+      step_level_wwa[light][color] = ((float) wwa[light][color] - current_wwa[light][color]) / transitiontime;
     } else {
-      step_level[color] = current_rgbw[color] / transitiontime;
+      step_level_rgb[light][color] = current_rgb[light][color] / transitiontime;
+      step_level_wwa[light][color] = current_wwa[light][color] / transitiontime;
     }
   }
 }
@@ -327,69 +236,102 @@ void process_lightdata(float transitiontime) {
 
 
 void lightEngine() {
-  for (uint8_t color = 0; color < LED_COLORS; color++) {
-    if (light_state) {
-      if (rgbw[color] != current_rgbw[color] ) {
-        in_transition = true;
-        current_rgbw[color] += step_level[color];
-        if ((step_level[color] > 0.0f && current_rgbw[color] > rgbw[color]) || (step_level[color] < 0.0f && current_rgbw[color] < rgbw[color])) {
-          current_rgbw[color] = rgbw[color];
+  for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
+    for (uint8_t color = 0; color < LED_COLORS; color++) {
+      if (light_state[light]) {
+        if (rgb[light][color] != current_rgb[light][color]) {
+          in_transition[light] = true;
+          current_rgb[light][color] += step_level_rgb[light][color];
+          if ((step_level_rgb[light][color] > 0.0f && current_rgb[light][color] > rgb[light][color]) ||
+              (step_level_rgb[light][color] < 0.0f && current_rgb[light][color] < rgb[light][color])) {
+            current_rgb[light][color] = rgb[light][color];
+          }
+          for (int i = strip[light][0]; i < strip[light][1] + 1; i++) {
+            leds_rgb[i] = CRGB((int) current_rgb[light][0], (int) current_rgb[light][1], (int) current_rgb[light][2]);
+          }
         }
-        for(int i=0; i<NUM_LEDS; i++)
-        {
-          leds[i]=CRGB((int)current_rgbw[0], (int)current_rgbw[1], (int)current_rgbw[2]);
-          leds2[i]=CRGB((int)current_rgbw[0], (int)current_rgbw[1], (int)current_rgbw[2]);
+        if (wwa[light][color] != current_wwa[light][color]) {
+          in_transition[light] = true;
+          current_wwa[light][color] += step_level_wwa[light][color];
+          if ((step_level_wwa[light][color] > 0.0f && current_wwa[light][color] > wwa[light][color]) ||
+              (step_level_wwa[light][color] < 0.0f && current_wwa[light][color] < wwa[light][color])) {
+            current_wwa[light][color] = wwa[light][color];
+          }
+          for (int i = strip[light][0]; i < strip[light][1] + 1; i++) {
+            leds_wwa[i] = CRGB((int) current_wwa[light][0], (int) current_wwa[light][1], (int) current_wwa[light][2]);
+          }
         }
-        
         FastLED.show();
-        analogWrite(pins[0], (int)(current_rgbw[3]));
-      }
-    } else {
-      if (current_rgbw[color] != 0) {
-        in_transition = true;
-        current_rgbw[color] -= step_level[color];
-        if (current_rgbw[color] < 0.0f) {
-          current_rgbw[color] = 0;
+      } else {
+        if (current_rgb[light][color] != 0) {
+          in_transition[light] = true;
+          current_rgb[light][color] -= step_level_rgb[light][color];
+          if (current_rgb[light][color] < 0.0f) {
+            current_rgb[light][color] = 0;
+          }
+          for (int i = strip[light][0]; i < strip[light][1] + 1; i++) {
+            leds_rgb[i] = CRGB((int) current_rgb[light][0], (int) current_rgb[light][1], (int) current_rgb[light][2]);
+          }
         }
-        for(int i=0; i<NUM_LEDS; i++)
-        {
-          leds[i]=CRGB((int)current_rgbw[0], (int)current_rgbw[1], (int)current_rgbw[2]);
-          leds2[i]=CRGB((int)current_rgbw[0], (int)current_rgbw[1], (int)current_rgbw[2]);
+        if (current_wwa[light][color] != 0) {
+          in_transition[light] = true;
+          current_wwa[light][color] -= step_level_wwa[light][color];
+          if (current_wwa[light][color] < 0.0f) {
+            current_wwa[light][color] = 0;
+          }
+          for (int i = strip[light][0]; i < strip[light][1] + 1; i++) {
+            leds_wwa[i] = CRGB((int) current_wwa[light][0], (int) current_wwa[light][1], (int) current_wwa[light][2]);
+          }
         }
-        
         FastLED.show();
-        analogWrite(pins[0], (int)(current_rgbw[3]));
       }
     }
+    if (in_transition[light]) {
+      FastLED.delay(6);
+      in_transition[light] = false;
+    }
   }
-  if (in_transition) {
-    FastLED.delay(6);
-    in_transition = false;
+}
+
+void readIR() {
+  if (IRrecv.decode(&results)) {
+    if (results.value != 0xFFFFFFFF) {
+      if (millis() - lastPressTime > MAX_TIME) {
+        ir_interrupted = true;
+      }
+      lastPressTime = millis();
+    }
+    IRrecv.resume();
   }
 }
 
 void setup() {
-  if(USE_F_LED_CC == true) {
-    FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection( CORRECTION );   
-//    FastLED.addLeds<LED_TYPE, DATA_PIN2, COLOR_ORDER>(leds2, NUM_LEDS).setCorrection( CORRECTION ); 
-  } else {
-    FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS); 
-  }
+  IRrecv.enableIRIn();
+  attachInterrupt(1, readIR, CHANGE);
+  
+  FastLED.addLeds<LED_TYPE, DATA_PIN_RGB, COLOR_ORDER>(leds_rgb, NUM_LEDS).setCorrection( CORRECTION );
+  FastLED.addLeds<LED_TYPE, DATA_PIN_WWA, COLOR_ORDER>(leds_wwa, NUM_LEDS).setCorrection( CORRECTION );
+
   EEPROM.begin(512);
 
-  analogWriteFreq(1000);
-  analogWriteRange(255);
-  
 #ifdef USE_STATIC_IP
   WiFi.config(strip_ip, gateway_ip, subnet_mask);
 #endif
 
-  apply_scene(EEPROM.read(2));
-  step_level[0] = rgbw[0] / 150.0; step_level[1] = rgbw[1] / 150.0; step_level[2] = rgbw[2] / 150.0; step_level[3] = rgbw[3] / 150.0;
-
+  for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
+    apply_scene(EEPROM.read(2), light);
+    step_level_rgb[light][0] = rgb[light][0] / 150.0;
+    step_level_rgb[light][1] = rgb[light][1] / 150.0;
+    step_level_rgb[light][2] = rgb[light][2] / 150.0;
+    step_level_wwa[light][0] = wwa[light][0] / 150.0;
+    step_level_wwa[light][1] = wwa[light][1] / 150.0;
+    step_level_wwa[light][2] = wwa[light][2] / 150.0;
+  }
 
   if (EEPROM.read(1) == 1 || (EEPROM.read(1) == 0 && EEPROM.read(0) == 1)) {
-    light_state = true;
+    for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
+      light_state[light] = true;
+    }
     for (uint8_t i = 0; i < 200; i++) {
       lightEngine();
     }
@@ -397,17 +339,6 @@ void setup() {
 
   WiFiManager wifiManager;
   wifiManager.autoConnect("New Hue Light");
-
-  if (! light_state) {
-    infoLight(white);
-    while (WiFi.status() != WL_CONNECTED) {
-      infoLight(red);
-      delay(500);
-    }
-    // Show that we are connected
-    infoLight(green);
-
-  }
 
   WiFi.macAddress(mac);
 
@@ -421,175 +352,139 @@ void setup() {
   // ArduinoOTA.setPassword((const char *)"123");
 
   ArduinoOTA.begin();
-  
-  pinMode(LED_BUILTIN, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
-  digitalWrite(LED_BUILTIN, HIGH);  // Turn the LED off by making the voltage HIGH
-  if (use_hardware_switch == true) {
-//    pinMode(button1_pin, INPUT);
-//    pinMode(button2_pin, INPUT);
-  }
-
-  server.on("/switch", []() {
-    server.send(200, "text/plain", "OK");
-    int button;
-    for (uint8_t i = 0; i < server.args(); i++) {
-      if (server.argName(i) == "button") {
-        button = server.arg(i).toInt();
-      }
-    }
-    if (button == 1000) {
-      if (light_state == false) {
-        light_state = true;
-        scene = 0;
-      } else {
-        apply_scene(scene);
-        scene++;
-        if (scene == 11) {
-          scene = 0;
-        }
-      }
-    } else if (button == 2000) {
-      if (light_state == false) {
-        bri = 30;
-        light_state = true;
-      } else {
-        bri += 30;
-      }
-      if (bri > 255) bri = 255;
-      if (color_mode == 1) convert_xy();
-      else if (color_mode == 2) convert_ct();
-      else if (color_mode == 3) convert_hue();
-    } else if (button == 3000 && light_state == true) {
-      bri -= 30;
-      if (bri < 1) bri = 1;
-      else {
-        if (color_mode == 1) convert_xy();
-        else if (color_mode == 2) convert_ct();
-        else if (color_mode == 3) convert_hue();
-      }
-    } else if (button == 4000) {
-      light_state = false;
-    }
-    for (uint8_t color = 0; color < LED_COLORS; color++) {
-      if (light_state) {
-        step_level[color] = (rgbw[color] - current_rgbw[color]) / 54;
-      } else {
-        step_level[color] = current_rgbw[color] / 54;
-      }
-    }
-  });
-
 
   server.on("/set", []() {
-    light_state = true;
+    uint8_t light;
     float transitiontime = 4;
     for (uint8_t i = 0; i < server.args(); i++) {
+      if (server.argName(i) == "light") {
+        light = server.arg(i).toInt() - 1;
+      }
       if (server.argName(i) == "on") {
         if (server.arg(i) == "True" || server.arg(i) == "true") {
           if (EEPROM.read(1) == 0 && EEPROM.read(0) != 1) {
             EEPROM.write(0, 1);
             EEPROM.commit();
           }
-          light_state = true;
+          light_state[light] = true;
         }
         else {
           if (EEPROM.read(1) == 0 && EEPROM.read(0) != 0) {
             EEPROM.write(0, 0);
             EEPROM.commit();
           }
-          light_state = false;
+          light_state[light] = false;
         }
       }
       else if (server.argName(i) == "r") {
-        rgbw[0] = server.arg(i).toInt();
-        color_mode = 0;
+        rgb[light][0] = server.arg(i).toInt();
+        color_mode[light] = COLORMODE_RGB;
       }
       else if (server.argName(i) == "g") {
-        rgbw[1] = server.arg(i).toInt();
-        color_mode = 0;
+        rgb[light][1] = server.arg(i).toInt();
+        color_mode[light] = COLORMODE_RGB;
       }
       else if (server.argName(i) == "b") {
-        rgbw[2] = server.arg(i).toInt();
-        color_mode = 0;
+        rgb[light][2] = server.arg(i).toInt();
+        color_mode[light] = COLORMODE_RGB;
       }
-      else if (server.argName(i) == "w") {
-        rgbw[3] = server.arg(i).toInt();
-        color_mode = 0;
-      }
+//      else if (server.argName(i) == "w") {
+//        rgb[3] = server.arg(i).toInt();
+//        color_mode = 0;
+//      }
       else if (server.argName(i) == "x") {
-        x = server.arg(i).toFloat();
-        color_mode = 1;
+        x[light] = server.arg(i).toFloat();
+        color_mode[light] = COLORMODE_XY;
       }
       else if (server.argName(i) == "y") {
-        y = server.arg(i).toFloat();
-        color_mode = 1;
+        y[light] = server.arg(i).toFloat();
+        color_mode[light] = COLORMODE_XY;
       }
       else if (server.argName(i) == "bri") {
         if (server.arg(i).toInt() != 0)
-          bri = server.arg(i).toInt();
+          bri[light] = server.arg(i).toInt();
       }
       else if (server.argName(i) == "bri_inc") {
-        bri += server.arg(i).toInt();
-        if (bri > 255) bri = 255;
-        else if (bri < 0) bri = 0;
+        bri[light] += server.arg(i).toInt();
+        if (bri[light] > 255) bri[light] = 255;
+        else if (bri[light] < 0) bri[light] = 0;
       }
       else if (server.argName(i) == "ct") {
-        ct = server.arg(i).toInt();
-        color_mode = 2;
+        ct[light] = server.arg(i).toInt();
+        color_mode[light] = COLORMODE_CT;
       }
       else if (server.argName(i) == "sat") {
-        sat = server.arg(i).toInt();
-        color_mode = 3;
+        sat[light] = server.arg(i).toInt();
+        color_mode[light] = COLORMODE_HUE;
       }
       else if (server.argName(i) == "hue") {
-        hue = server.arg(i).toInt();
-        color_mode = 3;
+        hue[light] = server.arg(i).toInt();
+        color_mode[light] = COLORMODE_HUE;
       }
       else if (server.argName(i) == "alert" && server.arg(i) == "select") {
-        if (light_state) {
-          current_rgbw[0] = 0; current_rgbw[1] = 0; current_rgbw[2] = 0; current_rgbw[3] = 0;
+        if (light_state[light]) {
+          if (color_mode[light] == COLORMODE_XY) {
+            current_rgb[light][0] = 0;
+            current_rgb[light][1] = 0;
+            current_rgb[light][2] = 0;
+          } else if (color_mode[light] == COLORMODE_CT) {
+            current_wwa[light][0] = 0;
+            current_wwa[light][1] = 0;
+            current_wwa[light][2] = 0;
+          }
         } else {
-          current_rgbw[0] = 255; current_rgbw[1] = 255; current_rgbw[2] = 255; current_rgbw[3] = 255;
+          if (color_mode[light] == COLORMODE_XY) {
+            current_rgb[light][0] = 255;
+            current_rgb[light][1] = 255;
+            current_rgb[light][2] = 255;
+          } else if (color_mode[light] == COLORMODE_CT) {
+            current_wwa[light][0] = 255;
+            current_wwa[light][1] = 255;
+            current_wwa[light][2] = 255;
+          }
         }
       }
       else if (server.argName(i) == "transitiontime") {
         transitiontime = server.arg(i).toInt();
       }
     }
-    server.send(200, "text/plain", "OK, x: " + (String)x + ", y:" + (String)y + ", bri:" + (String)bri + ", ct:" + ct + ", colormode:" + color_mode + ", state:" + light_state);
-    if (color_mode == 1 && light_state == true) {
-      convert_xy();
-    } else if (color_mode == 2 && light_state == true) {
-      convert_ct();
-    } else if (color_mode == 3 && light_state == true) {
-      convert_hue();
+    server.send(200, "text/plain", "OK, light: " + (String)light + "x: " + (String)x[light] + ", y:" + (String)y[light] + ", bri:" + (String)bri[light] + ", ct:" + ct[light] + ", colormode:" + color_mode[light] + ", state:" + light_state[light]);
+    if (color_mode[light] == COLORMODE_XY && light_state[light] == true) {
+      convert_xy(light);
+    } else if (color_mode[light] == COLORMODE_CT && light_state[light] == true) {
+      convert_ct(light);
     }
     transitiontime *= 16;
     for (uint8_t color = 0; color < LED_COLORS; color++) {
-      if (light_state) {
-        step_level[color] = (rgbw[color] - current_rgbw[color]) / transitiontime;
+      if (light_state[light]) {
+        step_level_rgb[light][color] = (rgb[light][color] - current_rgb[light][color]) / transitiontime;
+        step_level_wwa[light][color] = (wwa[light][color] - current_wwa[light][color]) / transitiontime;
       } else {
-        step_level[color] = current_rgbw[color] / transitiontime;
+        step_level_rgb[light][color] = current_rgb[light][color] / transitiontime;
+        step_level_wwa[light][color] = current_wwa[light][color] / transitiontime;
       }
     }
   });
 
   server.on("/get", []() {
+    uint8_t light;
+    if (server.hasArg("light"))
+      light = server.arg("light").toInt() - 1;
     String colormode;
     String power_status;
-    power_status = light_state ? "true" : "false";
-    if (color_mode == 1)
+    power_status = light_state[light] ? "true" : "false";
+    if (color_mode[light] == 1)
       colormode = "xy";
-    else if (color_mode == 2)
+    else if (color_mode[light] == 2)
       colormode = "ct";
-    else if (color_mode == 3)
+    else if (color_mode[light] == 3)
       colormode = "hs";
-    server.send(200, "text/plain", "{\"on\": " + power_status + ", \"bri\": " + (String)bri + ", \"xy\": [" + (String)x + ", " + (String)y + "], \"ct\":" + (String)ct + ", \"sat\": " + (String)sat + ", \"hue\": " + (String)hue + ", \"colormode\": \"" + colormode + "\"}");
-  });  
+    server.send(200, "text/plain", "{\"on\": " + power_status + ", \"bri\": " + (String)bri[light] + ", \"xy\": [" + (String)x[light] + ", " + (String)y[light] + "], \"ct\":" + (String)ct[light] + ", \"sat\": " + (String)sat[light] + ", \"hue\": " + (String)hue[light] + ", \"colormode\": \"" + colormode + "\"}");
+  });
 
 
   server.on("/detect", []() {
-    server.send(200, "text/plain", "{\"hue\": \"strip\",\"lights\": 3,\"name\": \"Jo Test Light\",\"modelid\": \"LST002\",\"mac\": \"" + String(mac[5], HEX) + ":"  + String(mac[4], HEX) + ":" + String(mac[3], HEX) + ":" + String(mac[2], HEX) + ":" + String(mac[1], HEX) + ":" + String(mac[0], HEX) + "\"}");
+    server.send(200, "text/plain", "{\"hue\": \"strip\",\"lights\": 3,\"name\": \"TV-Wand\",\"modelid\": \"LST002\",\"mac\": \"" + String(mac[5], HEX) + ":"  + String(mac[4], HEX) + ":" + String(mac[3], HEX) + ":" + String(mac[2], HEX) + ":" + String(mac[1], HEX) + ":" + String(mac[0], HEX) + "\"}");
   });
 
   server.on("/", []() {
@@ -601,156 +496,159 @@ void setup() {
       }
     }
 
-    if (server.hasArg("scene")) {
-      if (server.arg("bri") == "" && server.arg("hue") == "" && server.arg("ct") == "" && server.arg("sat") == "") {
-        if (  EEPROM.read(2) != server.arg("scene").toInt() && EEPROM.read(1) < 2) {
-          EEPROM.write(2, server.arg("scene").toInt());
-          EEPROM.commit();
+    for (int light = 0; light < NUM_LIGHTS; light++) {
+      if (server.hasArg("scene")) {
+        if (server.arg("bri") == "" && server.arg("hue") == "" && server.arg("ct") == "" && server.arg("sat") == "") {
+          if (EEPROM.read(2) != server.arg("scene").toInt() && EEPROM.read(1) < 2) {
+            EEPROM.write(2, server.arg("scene").toInt());
+            EEPROM.commit();
+          }
+          apply_scene(server.arg("scene").toInt(), light);
+        } else {
+          if (server.arg("bri") != "") {
+            bri[light] = server.arg("bri").toInt();
+          }
+          if (server.arg("hue") != "") {
+            hue[light] = server.arg("hue").toInt();
+          }
+          if (server.arg("sat") != "") {
+            sat[light] = server.arg("sat").toInt();
+          }
+          if (server.arg("ct") != "") {
+            ct[light] = server.arg("ct").toInt();
+          }
+          if (server.arg("colormode") == "1" && light_state[light] == true) {
+            convert_xy(light);
+          } else if (server.arg("colormode") == "2" && light_state[light] == true) {
+            convert_ct(light);
+          }
+          color_mode[light] = server.arg("colormode").toInt();
         }
-        apply_scene(server.arg("scene").toInt());
-      } else {
-        if (server.arg("bri") != "") {
-          bri = server.arg("bri").toInt();
-        }
-        if (server.arg("hue") != "") {
-          hue = server.arg("hue").toInt();
-        }
-        if (server.arg("sat") != "") {
-          sat = server.arg("sat").toInt();
-        }
-        if (server.arg("ct") != "") {
-          ct = server.arg("ct").toInt();
-        }
-        if (server.arg("colormode") == "1" && light_state == true) {
-          convert_xy();
-        } else if (server.arg("colormode") == "2" && light_state == true) {
-          convert_ct();
-        } else if (server.arg("colormode") == "3" && light_state == true) {
-          convert_hue();
-        }
-        color_mode = server.arg("colormode").toInt();
-      }
-    } else if (server.hasArg("on")) {
-      if (server.arg("on") == "true") {
-        light_state = true; {
-          if (EEPROM.read(1) == 0 && EEPROM.read(0) != 1) {
-            EEPROM.write(0, 1);
+      } else if (server.hasArg("on")) {
+        if (server.arg("on") == "true") {
+          light_state[light] = true;
+          {
+            if (EEPROM.read(1) == 0 && EEPROM.read(0) != 1) {
+              EEPROM.write(0, 1);
+            }
+          }
+        } else {
+          light_state[light] = false;
+          if (EEPROM.read(1) == 0 && EEPROM.read(0) != 0) {
+            EEPROM.write(0, 0);
           }
         }
-      } else {
-        light_state = false;
-        if (EEPROM.read(1) == 0 && EEPROM.read(0) != 0) {
-          EEPROM.write(0, 0);
+        EEPROM.commit();
+      } else if (server.hasArg("alert")) {
+        if (light_state[light]) {
+          current_rgb[light][0] = 0;
+          current_rgb[light][1] = 0;
+          current_rgb[light][2] = 0;
+        } else {
+          current_rgb[light][0] = 255;
+          current_rgb[light][1] = 255;
+          current_rgb[light][2] = 255;
         }
       }
-      EEPROM.commit();
-    } else if (server.hasArg("alert")) {
-      if (light_state) {
-        current_rgbw[0] = 0; current_rgbw[1] = 0; current_rgbw[2] = 0; current_rgbw[3] = 0;
-      } else {
-        current_rgbw[3] = 255;
-      }
-    }
-    for (uint8_t color = 0; color < LED_COLORS; color++) {
-      if (light_state) {
-        step_level[color] = ((float)rgbw[color] - current_rgbw[color]) / transitiontime;
-      } else {
-        step_level[color] = current_rgbw[color] / transitiontime;
+      for (uint8_t color = 0; color < LED_COLORS; color++) {
+        if (light_state[light]) {
+          step_level_rgb[light][color] = ((float) rgb[light][color] - current_rgb[light][color]) / transitiontime;
+          step_level_wwa[light][color] = ((float) wwa[light][color] - current_wwa[light][color]) / transitiontime;
+        } else {
+          step_level_rgb[light][color] = current_rgb[light][color] / transitiontime;
+          step_level_wwa[light][color] = current_wwa[light][color] / transitiontime;
+        }
       }
     }
     if (server.hasArg("reset")) {
       ESP.reset();
     }
 
-
-
-
-    String http_content = "<!doctype html>";
-    http_content += "<html>";
-    http_content += "<head>";
-    http_content += "<meta charset=\"utf-8\">";
-    http_content += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">";
-    http_content += "<title>Light Setup</title>";
-    http_content += "<link rel=\"stylesheet\" href=\"https://unpkg.com/purecss@0.6.2/build/pure-min.css\">";
-    http_content += "</head>";
-    http_content += "<body>";
-    http_content += "<fieldset>";
-    http_content += "<h3>Light Setup</h3>";
-    http_content += "<form class=\"pure-form pure-form-aligned\" action=\"/\" method=\"post\">";
-    http_content += "<div class=\"pure-control-group\">";
-    http_content += "<label for=\"power\"><strong>Power</strong></label>";
-    http_content += "<a class=\"pure-button"; if (light_state) http_content += "  pure-button-primary"; http_content += "\" href=\"/?on=true\">ON</a>";
-    http_content += "<a class=\"pure-button"; if (!light_state) http_content += "  pure-button-primary"; http_content += "\" href=\"/?on=false\">OFF</a>";
-    http_content += "</div>";
-    http_content += "<div class=\"pure-control-group\">";
-    http_content += "<label for=\"startup\">Startup</label>";
-    http_content += "<select onchange=\"this.form.submit()\" id=\"startup\" name=\"startup\">";
-    http_content += "<option "; if (EEPROM.read(1) == 0) http_content += "selected=\"selected\""; http_content += " value=\"0\">Last state</option>";
-    http_content += "<option "; if (EEPROM.read(1) == 1) http_content += "selected=\"selected\""; http_content += " value=\"1\">On</option>";
-    http_content += "<option "; if (EEPROM.read(1) == 2) http_content += "selected=\"selected\""; http_content += " value=\"2\">Off</option>";
-    http_content += "</select>";
-    http_content += "</div>";
-    http_content += "<div class=\"pure-control-group\">";
-    http_content += "<label for=\"scene\">Scene</label>";
-    http_content += "<select onchange = \"this.form.submit()\" id=\"scene\" name=\"scene\">";
-    http_content += "<option "; if (EEPROM.read(2) == 0) http_content += "selected=\"selected\""; http_content += " value=\"0\">Relax</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 1) http_content += "selected=\"selected\""; http_content += " value=\"1\">Read</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 2) http_content += "selected=\"selected\""; http_content += " value=\"2\">Concentrate</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 3) http_content += "selected=\"selected\""; http_content += " value=\"3\">Energize</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 4) http_content += "selected=\"selected\""; http_content += " value=\"4\">Bright</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 5) http_content += "selected=\"selected\""; http_content += " value=\"5\">Dimmed</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 6) http_content += "selected=\"selected\""; http_content += " value=\"6\">Nightlight</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 7) http_content += "selected=\"selected\""; http_content += " value=\"7\">Savanna sunset</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 8) http_content += "selected=\"selected\""; http_content += " value=\"8\">Tropical twilight</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 9) http_content += "selected=\"selected\""; http_content += " value=\"9\">Arctic aurora</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 10) http_content += "selected=\"selected\""; http_content += " value=\"10\">Spring blossom</option>";
-    http_content += "<option "; if (EEPROM.read(2) == 11) http_content += "selected=\"selected\""; http_content += " value=\"11\">Rainbow</option>";
-    http_content += "</select>";
-    http_content += "</div>";
-    http_content += "<br>";
-    http_content += "<div class=\"pure-control-group\">";
-    http_content += "<label for=\"state\"><strong>State</strong></label>";
-    http_content += "</div>";
-    http_content += "<div class=\"pure-control-group\">";
-    http_content += "<label for=\"bri\">Bri</label>";
-    http_content += "<input id=\"bri\" name=\"bri\" type=\"text\" placeholder=\"" + (String)bri + "\">";
-    http_content += "</div>";
-    http_content += "<div class=\"pure-control-group\">";
-    http_content += "<label for=\"hue\">Hue</label>";
-    http_content += "<input id=\"hue\" name=\"hue\" type=\"text\" placeholder=\"" + (String)hue + "\">";
-    http_content += "</div>";
-    http_content += "<div class=\"pure-control-group\">";
-    http_content += "<label for=\"sat\">Sat</label>";
-    http_content += "<input id=\"sat\" name=\"sat\" type=\"text\" placeholder=\"" + (String)sat + "\">";
-    http_content += "</div>";
-    http_content += "<div class=\"pure-control-group\">";
-    http_content += "<label for=\"ct\">CT</label>";
-    http_content += "<input id=\"ct\" name=\"ct\" type=\"text\" placeholder=\"" + (String)ct + "\">";
-    http_content += "</div>";
-    http_content += "<div class=\"pure-control-group\">";
-    http_content += "<label for=\"colormode\">Color</label>";
-    http_content += "<select id=\"colormode\" name=\"colormode\">";
-    http_content += "<option "; if (color_mode == 1) http_content += "selected=\"selected\""; http_content += " value=\"1\">xy</option>";
-    http_content += "<option "; if (color_mode == 2) http_content += "selected=\"selected\""; http_content += " value=\"2\">ct</option>";
-    http_content += "<option "; if (color_mode == 3) http_content += "selected=\"selected\""; http_content += " value=\"3\">hue</option>";
-    http_content += "</select>";
-    http_content += "</div>";
-    http_content += "<div class=\"pure-controls\">";
-    http_content += "<span class=\"pure-form-message\"><a href=\"/?alert=1\">alert</a> or <a href=\"/?reset=1\">reset</a></span>";
-    http_content += "<label for=\"cb\" class=\"pure-checkbox\">";
-    http_content += "</label>";
-    http_content += "<button type=\"submit\" class=\"pure-button pure-button-primary\">Save</button>";
-    http_content += "</div>";
-    http_content += "</fieldset>";
-    http_content += "</form>";
-    http_content += "</body>";
-    http_content += "</html>";
-
-
-    server.send(200, "text/html", http_content);
+//    String http_content = "<!doctype html>";
+//    http_content += "<html>";
+//    http_content += "<head>";
+//    http_content += "<meta charset=\"utf-8\">";
+//    http_content += "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">";
+//    http_content += "<title>Light Setup</title>";
+//    http_content += "<link rel=\"stylesheet\" href=\"https://unpkg.com/purecss@0.6.2/build/pure-min.css\">";
+//    http_content += "</head>";
+//    http_content += "<body>";
+//    http_content += "<fieldset>";
+//    http_content += "<h3>Light Setup</h3>";
+//    http_content += "<form class=\"pure-form pure-form-aligned\" action=\"/\" method=\"post\">";
+//    http_content += "<div class=\"pure-control-group\">";
+//    http_content += "<label for=\"power\"><strong>Power</strong></label>";
+//    http_content += "<a class=\"pure-button"; if (light_state) http_content += "  pure-button-primary"; http_content += "\" href=\"/?on=true\">ON</a>";
+//    http_content += "<a class=\"pure-button"; if (!light_state) http_content += "  pure-button-primary"; http_content += "\" href=\"/?on=false\">OFF</a>";
+//    http_content += "</div>";
+//    http_content += "<div class=\"pure-control-group\">";
+//    http_content += "<label for=\"startup\">Startup</label>";
+//    http_content += "<select onchange=\"this.form.submit()\" id=\"startup\" name=\"startup\">";
+//    http_content += "<option "; if (EEPROM.read(1) == 0) http_content += "selected=\"selected\""; http_content += " value=\"0\">Last state</option>";
+//    http_content += "<option "; if (EEPROM.read(1) == 1) http_content += "selected=\"selected\""; http_content += " value=\"1\">On</option>";
+//    http_content += "<option "; if (EEPROM.read(1) == 2) http_content += "selected=\"selected\""; http_content += " value=\"2\">Off</option>";
+//    http_content += "</select>";
+//    http_content += "</div>";
+//    http_content += "<div class=\"pure-control-group\">";
+//    http_content += "<label for=\"scene\">Scene</label>";
+//    http_content += "<select onchange = \"this.form.submit()\" id=\"scene\" name=\"scene\">";
+//    http_content += "<option "; if (EEPROM.read(2) == 0) http_content += "selected=\"selected\""; http_content += " value=\"0\">Relax</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 1) http_content += "selected=\"selected\""; http_content += " value=\"1\">Read</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 2) http_content += "selected=\"selected\""; http_content += " value=\"2\">Concentrate</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 3) http_content += "selected=\"selected\""; http_content += " value=\"3\">Energize</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 4) http_content += "selected=\"selected\""; http_content += " value=\"4\">Bright</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 5) http_content += "selected=\"selected\""; http_content += " value=\"5\">Dimmed</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 6) http_content += "selected=\"selected\""; http_content += " value=\"6\">Nightlight</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 7) http_content += "selected=\"selected\""; http_content += " value=\"7\">Savanna sunset</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 8) http_content += "selected=\"selected\""; http_content += " value=\"8\">Tropical twilight</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 9) http_content += "selected=\"selected\""; http_content += " value=\"9\">Arctic aurora</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 10) http_content += "selected=\"selected\""; http_content += " value=\"10\">Spring blossom</option>";
+//    http_content += "<option "; if (EEPROM.read(2) == 11) http_content += "selected=\"selected\""; http_content += " value=\"11\">Rainbow</option>";
+//    http_content += "</select>";
+//    http_content += "</div>";
+//    http_content += "<br>";
+//    http_content += "<div class=\"pure-control-group\">";
+//    http_content += "<label for=\"state\"><strong>State</strong></label>";
+//    http_content += "</div>";
+//    http_content += "<div class=\"pure-control-group\">";
+//    http_content += "<label for=\"bri\">Bri</label>";
+//    http_content += "<input id=\"bri\" name=\"bri\" type=\"text\" placeholder=\"" + (String)bri + "\">";
+//    http_content += "</div>";
+//    http_content += "<div class=\"pure-control-group\">";
+//    http_content += "<label for=\"hue\">Hue</label>";
+//    http_content += "<input id=\"hue\" name=\"hue\" type=\"text\" placeholder=\"" + (String)hue + "\">";
+//    http_content += "</div>";
+//    http_content += "<div class=\"pure-control-group\">";
+//    http_content += "<label for=\"sat\">Sat</label>";
+//    http_content += "<input id=\"sat\" name=\"sat\" type=\"text\" placeholder=\"" + (String)sat + "\">";
+//    http_content += "</div>";
+//    http_content += "<div class=\"pure-control-group\">";
+//    http_content += "<label for=\"ct\">CT</label>";
+//    http_content += "<input id=\"ct\" name=\"ct\" type=\"text\" placeholder=\"" + (String)ct + "\">";
+//    http_content += "</div>";
+//    http_content += "<div class=\"pure-control-group\">";
+//    http_content += "<label for=\"colormode\">Color</label>";
+//    http_content += "<select id=\"colormode\" name=\"colormode\">";
+//    http_content += "<option "; if (color_mode == 1) http_content += "selected=\"selected\""; http_content += " value=\"1\">xy</option>";
+//    http_content += "<option "; if (color_mode == 2) http_content += "selected=\"selected\""; http_content += " value=\"2\">ct</option>";
+//    http_content += "<option "; if (color_mode == 3) http_content += "selected=\"selected\""; http_content += " value=\"3\">hue</option>";
+//    http_content += "</select>";
+//    http_content += "</div>";
+//    http_content += "<div class=\"pure-controls\">";
+//    http_content += "<span class=\"pure-form-message\"><a href=\"/?alert=1\">alert</a> or <a href=\"/?reset=1\">reset</a></span>";
+//    http_content += "<label for=\"cb\" class=\"pure-checkbox\">";
+//    http_content += "</label>";
+//    http_content += "<button type=\"submit\" class=\"pure-button pure-button-primary\">Save</button>";
+//    http_content += "</div>";
+//    http_content += "</fieldset>";
+//    http_content += "</form>";
+//    http_content += "</body>";
+//    http_content += "</html>";
+//
+//
+//    server.send(200, "text/html", http_content);
 
   });
-
 
   server.onNotFound(handleNotFound);
 
