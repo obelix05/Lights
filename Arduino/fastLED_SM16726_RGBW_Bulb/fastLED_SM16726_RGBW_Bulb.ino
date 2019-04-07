@@ -3,39 +3,43 @@
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
 #include <ESP8266WebServer.h>
+
+#define FASTLED_ESP8266_RAW_PIN_ORDER
+
 #include <FastLED.h>
 #include <WiFiManager.h>
 #include <EEPROM.h>
 #include "Arduino.h"
 
-#define NUM_LEDS 1 // 1 led with 3 colors thanks to CRGB
+#define NUM_LEDS 9 // 1 led with 3 colors thanks to CRGB
 
 // Use Correction from fastLED library or not
 #define USE_F_LED_CC true
 
 // How many LED Colors are there including CW and/or WW
 // fastLED only controls rgb, not w
-#define LED_COLORS 4 
+#define LED_COLORS 3 
 
 
 // FastLED settings, data and clock pin for spi communication
 // Note that the protocol for SM16716 is the same for the SM16726
-#define DATA_PIN 14
-#define CLOCK_PIN 4
-#define COLOR_ORDER RGB
-#define LED_TYPE SM16716
+#define DATA_PIN 4
+#define DATA_PIN2 5
+//#define CLOCK_PIN 4
+#define COLOR_ORDER GRB
+#define LED_TYPE WS2812B
 #define CORRECTION TypicalSMD5050
 
 // May get messed up with SPI CLOCK_PIN with this particular bulb
 #define use_hardware_switch false // To control on/off state and brightness using GPIO/Pushbutton, set this value to true.
 //For GPIO based on/off and brightness control, it is mandatory to connect the following GPIO pins to ground using 10k resistor
-#define button1_pin 4 // on and brightness up
-#define button2_pin 5 // off and brightness down
+//#define button1_pin 4 // on and brightness up
+//#define button2_pin 5 // off and brightness down
 
 // !!!!!!!! Experimental !!!!!!!!!! 
 // True - add cold white LEDs according to luminance/ whiteness in xy color selector
 // False - Don't
-#define W_ON_XY true
+#define W_ON_XY false
 
 // How many colors are controlled by basic PWM, not fastLED
 #define PWM_CHANNELS 1
@@ -50,10 +54,11 @@ IPAddress subnet_mask(255, 255, 255,   0);
 
 
 
-uint8_t rgbw[4], color_mode, scene;
+uint8_t rgbw[3], wwa[3], color_mode, scene;
 bool light_state, in_transition;
 int transitiontime, ct, hue, bri, sat;
-float step_level[4], current_rgbw[4], x, y;
+float step_level[4], current_rgbw
+[3], current_wwa[3], x, y;
 byte mac[6];
 
 ESP8266WebServer server(80);
@@ -66,6 +71,7 @@ CRGB black = CRGB(0, 0, 0);
 
 // Set up array for use by FastLED
 CRGB leds[NUM_LEDS];
+CRGB leds2[NUM_LEDS];
 
 void convert_hue()
 {
@@ -260,7 +266,11 @@ void handleNotFound() {
 
 void infoLight(CRGB color) {
   // Flash the strip in the selected color. White = booted, green = WLAN connected, red = WLAN could not connect
-  leds[0]= color;
+  for(int i=0; i<NUM_LEDS; i++)
+  {
+    leds[i]= color;
+  }
+  
   FastLED.show();
   FastLED.delay(10);
   leds[0] = CRGB::Black;
@@ -325,7 +335,12 @@ void lightEngine() {
         if ((step_level[color] > 0.0f && current_rgbw[color] > rgbw[color]) || (step_level[color] < 0.0f && current_rgbw[color] < rgbw[color])) {
           current_rgbw[color] = rgbw[color];
         }
-        leds[0]=CRGB((int)current_rgbw[0], (int)current_rgbw[1], (int)current_rgbw[2]);
+        for(int i=0; i<NUM_LEDS; i++)
+        {
+          leds[i]=CRGB((int)current_rgbw[0], (int)current_rgbw[1], (int)current_rgbw[2]);
+          leds2[i]=CRGB((int)current_rgbw[0], (int)current_rgbw[1], (int)current_rgbw[2]);
+        }
+        
         FastLED.show();
         analogWrite(pins[0], (int)(current_rgbw[3]));
       }
@@ -336,7 +351,12 @@ void lightEngine() {
         if (current_rgbw[color] < 0.0f) {
           current_rgbw[color] = 0;
         }
-        leds[0]=CRGB((int)current_rgbw[0], (int)current_rgbw[1], (int)current_rgbw[2]);
+        for(int i=0; i<NUM_LEDS; i++)
+        {
+          leds[i]=CRGB((int)current_rgbw[0], (int)current_rgbw[1], (int)current_rgbw[2]);
+          leds2[i]=CRGB((int)current_rgbw[0], (int)current_rgbw[1], (int)current_rgbw[2]);
+        }
+        
         FastLED.show();
         analogWrite(pins[0], (int)(current_rgbw[3]));
       }
@@ -350,9 +370,10 @@ void lightEngine() {
 
 void setup() {
   if(USE_F_LED_CC == true) {
-    FastLED.addLeds<LED_TYPE, DATA_PIN, CLOCK_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection( CORRECTION );   
+    FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection( CORRECTION );   
+//    FastLED.addLeds<LED_TYPE, DATA_PIN2, COLOR_ORDER>(leds2, NUM_LEDS).setCorrection( CORRECTION ); 
   } else {
-    FastLED.addLeds<LED_TYPE, DATA_PIN, CLOCK_PIN, COLOR_ORDER>(leds, NUM_LEDS); 
+    FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS); 
   }
   EEPROM.begin(512);
 
@@ -404,8 +425,8 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
   digitalWrite(LED_BUILTIN, HIGH);  // Turn the LED off by making the voltage HIGH
   if (use_hardware_switch == true) {
-    pinMode(button1_pin, INPUT);
-    pinMode(button2_pin, INPUT);
+//    pinMode(button1_pin, INPUT);
+//    pinMode(button2_pin, INPUT);
   }
 
   server.on("/switch", []() {
@@ -568,7 +589,7 @@ void setup() {
 
 
   server.on("/detect", []() {
-    server.send(200, "text/plain", "{\"hue\": \"bulb\",\"lights\": 1,\"modelid\": \"LCT015\",\"mac\": \"" + String(mac[5], HEX) + ":"  + String(mac[4], HEX) + ":" + String(mac[3], HEX) + ":" + String(mac[2], HEX) + ":" + String(mac[1], HEX) + ":" + String(mac[0], HEX) + "\"}");
+    server.send(200, "text/plain", "{\"hue\": \"strip\",\"lights\": 3,\"name\": \"Jo Test Light\",\"modelid\": \"LST002\",\"mac\": \"" + String(mac[5], HEX) + ":"  + String(mac[4], HEX) + ":" + String(mac[3], HEX) + ":" + String(mac[2], HEX) + ":" + String(mac[1], HEX) + ":" + String(mac[0], HEX) + "\"}");
   });
 
   server.on("/", []() {
@@ -683,6 +704,7 @@ void setup() {
     http_content += "<option "; if (EEPROM.read(2) == 8) http_content += "selected=\"selected\""; http_content += " value=\"8\">Tropical twilight</option>";
     http_content += "<option "; if (EEPROM.read(2) == 9) http_content += "selected=\"selected\""; http_content += " value=\"9\">Arctic aurora</option>";
     http_content += "<option "; if (EEPROM.read(2) == 10) http_content += "selected=\"selected\""; http_content += " value=\"10\">Spring blossom</option>";
+    http_content += "<option "; if (EEPROM.read(2) == 11) http_content += "selected=\"selected\""; http_content += " value=\"11\">Rainbow</option>";
     http_content += "</select>";
     http_content += "</div>";
     http_content += "<br>";
