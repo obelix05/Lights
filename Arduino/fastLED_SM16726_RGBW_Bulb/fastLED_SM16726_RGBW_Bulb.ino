@@ -209,28 +209,28 @@ void apply_scene(uint8_t new_scene, uint8_t light) {
   }
 }
 
-void process_lightdata(float transitiontime, uint8_t light) {
-  transitiontime *= 17 - (NUM_LEDS / 40); //every extra led add a small delay that need to be counted
-  if (!ir_interrupted) {
-    if (color_mode[light] == COLORMODE_XY && light_state[light] == true) {
-      convert_xy(light);
-    } else if (color_mode[light] == COLORMODE_CT && light_state[light] == true) {
-      convert_ct(light);
-    }
-  } else {
-    encodeIR();
-  }
-  transitiontime *= 16;
-  for (uint8_t color = 0; color < LED_COLORS; color++) {
-    if (light_state[light]) {
-      step_level_rgb[light][color] = ((float) rgb[light][color] - current_rgb[light][color]) / transitiontime;
-      step_level_wwa[light][color] = ((float) wwa[light][color] - current_wwa[light][color]) / transitiontime;
-    } else {
-      step_level_rgb[light][color] = current_rgb[light][color] / transitiontime;
-      step_level_wwa[light][color] = current_wwa[light][color] / transitiontime;
-    }
-  }
-}
+//void process_lightdata(float transitiontime, uint8_t light) {
+//  transitiontime *= 17 - (NUM_LEDS / 40); //every extra led add a small delay that need to be counted
+//  if (!ir_interrupted) {
+//    if (color_mode[light] == COLORMODE_XY && light_state[light] == true) {
+//      convert_xy(light);
+//    } else if (color_mode[light] == COLORMODE_CT && light_state[light] == true) {
+//      convert_ct(light);
+//    }
+//  } else {
+//    encodeIR();
+//  }
+//  transitiontime *= 16;
+//  for (uint8_t color = 0; color < LED_COLORS; color++) {
+//    if (light_state[light]) {
+//      step_level_rgb[light][color] = ((float) rgb[light][color] - current_rgb[light][color]) / transitiontime;
+//      step_level_wwa[light][color] = ((float) wwa[light][color] - current_wwa[light][color]) / transitiontime;
+//    } else {
+//      step_level_rgb[light][color] = current_rgb[light][color] / transitiontime;
+//      step_level_wwa[light][color] = current_wwa[light][color] / transitiontime;
+//    }
+//  }
+//}
 
 // function to get white pwm value
 
@@ -308,7 +308,7 @@ void readIR() {
 void setup() {
   IRrecv.enableIRIn();
   attachInterrupt(1, readIR, CHANGE);
-  
+
   FastLED.addLeds<LED_TYPE, DATA_PIN_RGB, COLOR_ORDER>(leds_rgb, NUM_LEDS).setCorrection( CORRECTION );
   FastLED.addLeds<LED_TYPE, DATA_PIN_WWA, COLOR_ORDER>(leds_wwa, NUM_LEDS).setCorrection( CORRECTION );
 
@@ -454,7 +454,7 @@ void setup() {
     } else if (color_mode[light] == COLORMODE_CT && light_state[light] == true) {
       convert_ct(light);
     }
-    transitiontime *= 16;
+    //transitiontime *= 16;
     for (uint8_t color = 0; color < LED_COLORS; color++) {
       if (light_state[light]) {
         step_level_rgb[light][color] = (rgb[light][color] - current_rgb[light][color]) / transitiontime;
