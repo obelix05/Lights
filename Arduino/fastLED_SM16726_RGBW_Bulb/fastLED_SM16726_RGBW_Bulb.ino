@@ -38,10 +38,16 @@ bool ir_interrupted = 0;
 #define LED_TYPE WS2812B
 #define CORRECTION TypicalSMD5050
 
-int strip[NUM_LIGHTS][2] = {
-    {0, 2},
-    {3, 5},
-    {6, 8}
+int strip_rgb[NUM_LIGHTS][2] = {
+    {0, 108},
+    {109, 227},
+    {228, 340}
+};
+
+int strip_wwa[NUM_LIGHTS][2] = {
+    {0, 111},
+    {112, 229},
+    {230, 340}
 };
 
 //#define USE_STATIC_IP //! uncomment to enable Static IP Adress
@@ -246,7 +252,7 @@ void lightEngine() {
               (step_level_rgb[light][color] < 0.0f && current_rgb[light][color] < rgb[light][color])) {
             current_rgb[light][color] = rgb[light][color];
           }
-          for (int i = strip[light][0]; i < strip[light][1] + 1; i++) {
+          for (int i = strip_rgb[light][0]; i < strip_rgb[light][1] + 1; i++) {
             leds_rgb[i] = CRGB((int) current_rgb[light][0], (int) current_rgb[light][1], (int) current_rgb[light][2]);
           }
         }
@@ -257,7 +263,7 @@ void lightEngine() {
               (step_level_wwa[light][color] < 0.0f && current_wwa[light][color] < wwa[light][color])) {
             current_wwa[light][color] = wwa[light][color];
           }
-          for (int i = strip[light][0]; i < strip[light][1] + 1; i++) {
+          for (int i = strip_wwa[light][0]; i < strip_wwa[light][1] + 1; i++) {
             leds_wwa[i] = CRGB((int) current_wwa[light][0], (int) current_wwa[light][1], (int) current_wwa[light][2]);
           }
         }
@@ -269,7 +275,7 @@ void lightEngine() {
           if (current_rgb[light][color] < 0.0f) {
             current_rgb[light][color] = 0;
           }
-          for (int i = strip[light][0]; i < strip[light][1] + 1; i++) {
+          for (int i = strip_rgb[light][0]; i < strip_rgb[light][1] + 1; i++) {
             leds_rgb[i] = CRGB((int) current_rgb[light][0], (int) current_rgb[light][1], (int) current_rgb[light][2]);
           }
         }
@@ -279,7 +285,7 @@ void lightEngine() {
           if (current_wwa[light][color] < 0.0f) {
             current_wwa[light][color] = 0;
           }
-          for (int i = strip[light][0]; i < strip[light][1] + 1; i++) {
+          for (int i = strip_wwa[light][0]; i < strip_wwa[light][1] + 1; i++) {
             leds_wwa[i] = CRGB((int) current_wwa[light][0], (int) current_wwa[light][1], (int) current_wwa[light][2]);
           }
         }
