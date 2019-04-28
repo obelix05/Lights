@@ -2,6 +2,7 @@
 
 #include <IRremoteESP8266.h>
 #include <IRrecv.h>
+#include <IRremoteHexCodes.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
@@ -12,14 +13,21 @@
 #include <EEPROM.h>
 #include "Arduino.h"
 
-#define RECV_PIN 6
-IRrecv IRrecv(RECV_PIN);
+//#define RECV_PIN 15
+const uint16_t kRecvPin = 14;
+IRrecv IRrecv(kRecvPin);
 decode_results results;
 #define MAX_TIME 150
 long lastPressTime = 0;
 bool ir_interrupted = 0;
 
-#define NUM_LEDS 9 // 1 led with 3 colors thanks to CRGB
+#define entertainmentTimeout 1500 // millis
+bool entertainmentRun;
+byte packetBuffer[46];
+unsigned long lastEPMillis;
+
+//#define NUM_LEDS 9
+#define NUM_LEDS 341 // 1 led with 3 colors thanks to CRGB
 
 // Use Correction from fastLED library or not
 #define USE_F_LED_CC true
@@ -28,6 +36,8 @@ bool ir_interrupted = 0;
 // fastLED only controls rgb, not w
 #define LED_COLORS 3
 #define NUM_LIGHTS 3
+
+float transitiontime = 25.0;
 
 // FastLED settings, data and clock pin for spi communication
 // Note that the protocol for SM16716 is the same for the SM16726
@@ -63,12 +73,13 @@ IPAddress subnet_mask(255, 255, 255,   0);
 #define COLORMODE_HUE 3
 
 uint8_t rgb[NUM_LIGHTS][3], wwa[NUM_LIGHTS][3], color_mode[NUM_LIGHTS], scene;
-bool light_state[NUM_LIGHTS], in_transition[NUM_LIGHTS];
+bool light_state[NUM_LIGHTS], in_transition[NUM_LIGHTS], any_in_transition;
 int transitiontime, ct[NUM_LIGHTS], hue[NUM_LIGHTS], bri[NUM_LIGHTS], sat[NUM_LIGHTS];
 float step_level_rgb[NUM_LIGHTS][3], step_level_wwa[NUM_LIGHTS][3], current_rgb[NUM_LIGHTS][3], current_wwa[NUM_LIGHTS][3], x[NUM_LIGHTS], y[NUM_LIGHTS];
 byte mac[6];
 
 ESP8266WebServer server(80);
+WiFiUDP Udp;
 
 
 // Set up array for use by FastLED
@@ -130,16 +141,16 @@ void convert_xy(uint8_t light)
 }
 
 void convert_ct(uint8_t light) {
-  uint8 percent_warm;
-  uint8 percent_cold;
-  uint8 percent_amber;
+  uint8_t percent_warm;
+  uint8_t percent_cold;
+  uint8_t percent_amber;
 
   if (ct[light] < 400) {
     percent_warm = ((ct[light] - 153) * 100) / 247;
     percent_cold = 100 - percent_warm;
     percent_amber = 0;
   } else {
-    percent_cold = 0;
+    percent_cold = 4;
     percent_warm = 100;
     percent_amber = 100 - (500 - ct[light]);
   }
@@ -153,12 +164,105 @@ void convert_ct(uint8_t light) {
   rgb[light][2] = 0;
 }
 
+void setWWA (long hexColor, uint8_t light) {
+  color_mode[light] = COLORMODE_CT;
+  
+  wwa[light][0] = hexColor >> 16;
+  wwa[light][1] = hexColor >> 8 & 0xFF;
+  wwa[light][2] = hexColor & 0xFF;
+
+  rgb[light][0] = 0;
+  rgb[light][1] = 0;
+  rgb[light][2] = 0;
+
+  ct[light] = 500;
+}
+
+void setRGB (long hexColor, uint8_t light) {
+  color_mode[light] = COLORMODE_RGB;
+  
+  rgb[light][0] = hexColor >> 16;
+  rgb[light][1] = hexColor >> 8 & 0xFF;
+  rgb[light][2] = hexColor & 0xFF;
+
+  wwa[light][0] = 0;
+  wwa[light][1] = 0;
+  wwa[light][2] = 0;
+
+  rgb_to_cie(rgb[light][0], rgb[light][1], rgb[light][2], light);
+}
+
+void rgb_to_cie(float red, float green, float blue, uint8_t light)
+{
+    //Apply a gamma correction to the RGB values, which makes the color more vivid and more the like the color displayed on the screen of your device
+    red   = (red > 0.04045) ? pow((red + 0.055) / (1.0 + 0.055), 2.4) : (red / 12.92);
+    green   = (green > 0.04045) ? pow((green + 0.055) / (1.0 + 0.055), 2.4) : (green / 12.92);
+    blue  = (blue > 0.04045) ? pow((blue + 0.055) / (1.0 + 0.055), 2.4) : (blue / 12.92);
+
+    //RGB values to XYZ using the Wide RGB D65 conversion formula
+    float X     = red * 0.664511 + green * 0.154324 + blue * 0.162028;
+    float Y     = red * 0.283881 + green * 0.668433 + blue * 0.047685;
+    float Z     = red * 0.000088 + green * 0.072310 + blue * 0.986039;
+
+    //Calculate the xy values from the XYZ values
+    x[light]     = (X / (X + Y + Z));
+    y[light]     = (Y / (X + Y + Z));
+
+    if (isnan(x[light])) {
+      x[light] = 0;
+    }
+
+    if (isnan(y[light])) {
+      y[light] = 0;
+    }
+}
+
 void encodeIR() {
   uint64_t irresult = results.value;
   for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
-    switch (irresult) {
-      case 0x12345678: rgb[light][0] = 255; rgb[light][1] = 0; rgb[light][2] = 0;
+    switch (results.value) {
+      case BRIGHTNESS_UP   : bri[light] += 10;  break;
+      case BRIGHTNESS_DOWN : bri[light] -= 10; break;
+      case RED_UP          : rgb[light][0] += 10; break;
+      case RED_DOWN        : rgb[light][0] -= 10; break;
+      case GREEN_UP        : rgb[light][1] += 10; break;
+      case GREEN_DOWN      : rgb[light][1] -= 10; break;
+      case BLUE_UP         : rgb[light][2] += 10; break;
+      case BLUE_DOWN       : rgb[light][2] -= 10; break;
+      case ON_OFF          : light_state[light] = !light_state[light]; break;
+      case RED             : setRGB(0xFF0000, light); break;
+      case GREEN           : setRGB(0x00FF00, light); break;
+      case BLUE            : setRGB(0x0000FF, light); break;
+      case WHITE           : setWWA(0xFF0AFF, light); break;
+      case ORANGE          : setRGB(0xFF7F00, light); break;
+      case YELLOW_DARK     : setRGB(0xFFAA00, light); break;
+      case YELLOW_MEDIUM   : setRGB(0xFFD400, light); break;
+      case YELLOW_LIGHT    : setRGB(0xFFFF00, light); break;
+      case GREEN_LIGHT     : setRGB(0x00FFAA, light); break;
+      case CYAN            : setRGB(0x00FFFF, light); break;
+      case BLUE_LIGHT      : setRGB(0x00AAFF, light); break;
+      case BLUE_SKY        : setRGB(0x0055FF, light); break;
+      case BLUE_DARK       : setRGB(0x000080, light); break;
+      case BLUE_LYON       : setRGB(0x3F0080, light); break;
+      case PURPLE          : setRGB(0x7A00BF, light); break;
+      case RADDISH         : setRGB(0xFF00FF, light); break;
+      case WARM_WHITE      : setRGB(0xFF9329, light); break;
+      case WHITE_PINK      : setRGB(0xFFDDDD, light); break;
+      case WHITE_GREEN     : setRGB(0xDEFFBD, light); break;
+      case WHITE_BLUE      : setRGB(0x409CFF, light); break;       
+      case DIY1            : setWWA(0x1E000A, light); break;
+//      case DIY2            : fill_solid(leds, NUM_LEDS, 0x000000); controllers[1]->showLeds(BRIGHTNESS); fill_rainbow(leds, NUM_LEDS, 0); controllers[0]->showLeds(BRIGHTNESS); break;
+//      case DIY3            : fill_solid(leds, NUM_LEDS, 0x000000); controllers[0]->showLeds(BRIGHTNESS); fill_rainbow(leds, NUM_LEDS, 0); controllers[1]->showLeds(BRIGHTNESS); break;
+//                  case DIY4            : led_controller = 0; set3Colors(CRGB::Blue, CRGB::White, CRGB::Blue); break;
+//                  case DIY5            : led_controller = 0; set3Colors(CRGB::White, CRGB::Blue, CRGB::White); break;
+            
+      //case JUMP3           : colorMode = ~colorMode; jumping = 1; Serial.println("Hello"); Serial.println(colorMode); break;
+      //case FADE7           : fade = 1; bright = 255; setInterval(100,2); break;
+      //case QUICK           : setInterval(-10,1); break;
+      //case SLOW            : setInterval(10,1); break;
+      default: break;
     }
+    process_lightdata(transitiontime, light);
   }
 }
 
@@ -203,31 +307,24 @@ void apply_scene(uint8_t new_scene, uint8_t light) {
   }
 }
 
-//void process_lightdata(float transitiontime, uint8_t light) {
-//  transitiontime *= 17 - (NUM_LEDS / 40); //every extra led add a small delay that need to be counted
-//  if (!ir_interrupted) {
-//    if (color_mode[light] == COLORMODE_XY && light_state[light] == true) {
-//      convert_xy(light);
-//    } else if (color_mode[light] == COLORMODE_CT && light_state[light] == true) {
-//      convert_ct(light);
-//    }
-//  } else {
-//    encodeIR();
-//  }
-//  transitiontime *= 16;
-//  for (uint8_t color = 0; color < LED_COLORS; color++) {
-//    if (light_state[light]) {
-//      step_level_rgb[light][color] = ((float) rgb[light][color] - current_rgb[light][color]) / transitiontime;
-//      step_level_wwa[light][color] = ((float) wwa[light][color] - current_wwa[light][color]) / transitiontime;
-//    } else {
-//      step_level_rgb[light][color] = current_rgb[light][color] / transitiontime;
-//      step_level_wwa[light][color] = current_wwa[light][color] / transitiontime;
-//    }
-//  }
-//}
-
-// function to get white pwm value
-
+void process_lightdata(float transitiontime, uint8_t light) {
+  if (!ir_interrupted) {
+    if (color_mode[light] == COLORMODE_XY && light_state[light] == true) {
+      convert_xy(light);
+    } else if (color_mode[light] == COLORMODE_CT && light_state[light] == true) {
+      convert_ct(light);
+    }
+  }
+  for (uint8_t color = 0; color < LED_COLORS; color++) {
+    if (light_state[light]) {
+      step_level_rgb[light][color] = ((float) rgb[light][color] - current_rgb[light][color]) / transitiontime;
+      step_level_wwa[light][color] = ((float) wwa[light][color] - current_wwa[light][color]) / transitiontime;
+    } else {
+      step_level_rgb[light][color] = current_rgb[light][color] / transitiontime;
+      step_level_wwa[light][color] = current_wwa[light][color] / transitiontime;
+    }
+  }
+}
 
 void lightEngine() {
   for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
@@ -243,6 +340,8 @@ void lightEngine() {
           for (int i = strip_rgb[light][0]; i < strip_rgb[light][1] + 1; i++) {
             leds_rgb[i] = CRGB((int) current_rgb[light][0], (int) current_rgb[light][1], (int) current_rgb[light][2]);
           }
+        } else {
+          in_transition[light] = false;
         }
         if (wwa[light][color] != current_wwa[light][color]) {
           in_transition[light] = true;
@@ -254,8 +353,9 @@ void lightEngine() {
           for (int i = strip_wwa[light][0]; i < strip_wwa[light][1] + 1; i++) {
             leds_wwa[i] = CRGB((int) current_wwa[light][0], (int) current_wwa[light][1], (int) current_wwa[light][2]);
           }
+        } else {
+          in_transition[light] = false;
         }
-        FastLED.show();
       } else {
         if (current_rgb[light][color] != 0) {
           in_transition[light] = true;
@@ -266,6 +366,8 @@ void lightEngine() {
           for (int i = strip_rgb[light][0]; i < strip_rgb[light][1] + 1; i++) {
             leds_rgb[i] = CRGB((int) current_rgb[light][0], (int) current_rgb[light][1], (int) current_rgb[light][2]);
           }
+        } else {
+          in_transition[light] = false;
         }
         if (current_wwa[light][color] != 0) {
           in_transition[light] = true;
@@ -276,22 +378,20 @@ void lightEngine() {
           for (int i = strip_wwa[light][0]; i < strip_wwa[light][1] + 1; i++) {
             leds_wwa[i] = CRGB((int) current_wwa[light][0], (int) current_wwa[light][1], (int) current_wwa[light][2]);
           }
+        } else {
+          in_transition[light] = false;
         }
-        FastLED.show();
       }
     }
-    if (in_transition[light]) {
-      FastLED.delay(6);
-      in_transition[light] = false;
-    }
   }
+  FastLED.show();
 }
 
 void readIR() {
   if (IRrecv.decode(&results)) {
     if (results.value != 0xFFFFFFFF) {
       if (millis() - lastPressTime > MAX_TIME) {
-        ir_interrupted = true;
+        encodeIR();
       }
       lastPressTime = millis();
     }
@@ -304,7 +404,7 @@ void setup() {
   
 
   FastLED.addLeds<LED_TYPE, DATA_PIN_RGB, COLOR_ORDER>(leds_rgb, NUM_LEDS).setCorrection( CORRECTION );
-  FastLED.addLeds<LED_TYPE, DATA_PIN_WWA, COLOR_ORDER>(leds_wwa, NUM_LEDS).setCorrection( CORRECTION );
+  FastLED.addLeds<LED_TYPE, DATA_PIN_WWA, COLOR_ORDER>(leds_wwa, NUM_LEDS);//.setCorrection( CORRECTION );
 
   EEPROM.begin(512);
 
@@ -313,21 +413,21 @@ void setup() {
 #endif
 
   for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
-    apply_scene(EEPROM.read(2), light);
-    step_level_rgb[light][0] = rgb[light][0] / 150.0;
-    step_level_rgb[light][1] = rgb[light][1] / 150.0;
-    step_level_rgb[light][2] = rgb[light][2] / 150.0;
-    step_level_wwa[light][0] = wwa[light][0] / 150.0;
-    step_level_wwa[light][1] = wwa[light][1] / 150.0;
-    step_level_wwa[light][2] = wwa[light][2] / 150.0;
+    ct[light] = 500;
+    convert_ct(light);
+    color_mode[light] = COLORMODE_CT;
+    bri[light] = 255;
+    light_state[light] = true;
+    process_lightdata(transitiontime, light);
+    in_transition[light] = true;
   }
 
-  if (EEPROM.read(1) == 1 || (EEPROM.read(1) == 0 && EEPROM.read(0) == 1)) {
+  any_in_transition = true;
+  while (any_in_transition) {
+    any_in_transition = false;
+    lightEngine();
     for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
-      light_state[light] = true;
-    }
-    for (uint8_t i = 0; i < 200; i++) {
-      lightEngine();
+      any_in_transition |= in_transition[light];
     }
   }
 
@@ -347,6 +447,8 @@ void setup() {
 
   ArduinoOTA.begin();
 
+  Udp.begin(2100);
+
   server.on("/set", []() {
     uint8_t light;
     float transitiontime = 4;
@@ -359,6 +461,14 @@ void setup() {
           if (EEPROM.read(1) == 0 && EEPROM.read(0) != 1) {
             EEPROM.write(0, 1);
             EEPROM.commit();
+          }
+          if ((server.args() <= 2) || (server.args() == 3) && (server.hasArg("alert")) ) {
+            ct[light] = 500;
+            convert_ct(light);
+            color_mode[light] = COLORMODE_CT;
+            bri[light] = 255;
+            process_lightdata(transitiontime, light);
+            in_transition[light] = true;
           }
           light_state[light] = true;
         }
@@ -382,10 +492,6 @@ void setup() {
         rgb[light][2] = server.arg(i).toInt();
         color_mode[light] = COLORMODE_RGB;
       }
-//      else if (server.argName(i) == "w") {
-//        rgb[3] = server.arg(i).toInt();
-//        color_mode = 0;
-//      }
       else if (server.argName(i) == "x") {
         x[light] = server.arg(i).toFloat();
         color_mode[light] = COLORMODE_XY;
@@ -443,21 +549,7 @@ void setup() {
       }
     }
     server.send(200, "text/plain", "OK, light: " + (String)light + "x: " + (String)x[light] + ", y:" + (String)y[light] + ", bri:" + (String)bri[light] + ", ct:" + ct[light] + ", colormode:" + color_mode[light] + ", state:" + light_state[light]);
-    if (color_mode[light] == COLORMODE_XY && light_state[light] == true) {
-      convert_xy(light);
-    } else if (color_mode[light] == COLORMODE_CT && light_state[light] == true) {
-      convert_ct(light);
-    }
-    //transitiontime *= 16;
-    for (uint8_t color = 0; color < LED_COLORS; color++) {
-      if (light_state[light]) {
-        step_level_rgb[light][color] = (rgb[light][color] - current_rgb[light][color]) / transitiontime;
-        step_level_wwa[light][color] = (wwa[light][color] - current_wwa[light][color]) / transitiontime;
-      } else {
-        step_level_rgb[light][color] = current_rgb[light][color] / transitiontime;
-        step_level_wwa[light][color] = current_wwa[light][color] / transitiontime;
-      }
-    }
+    process_lightdata(transitiontime, light);
   });
 
   server.on("/get", []() {
@@ -649,8 +741,41 @@ void setup() {
   server.begin();
 }
 
+void entertainment() {
+  uint8_t packetSize = Udp.parsePacket();
+  if (packetSize) {
+    if (!entertainmentRun) {
+      entertainmentRun = true;
+    }
+    lastEPMillis = millis();
+    Udp.read(packetBuffer, packetSize);
+    for (uint8_t i = 0; i < packetSize / 4; i++) {
+      current_rgb[packetBuffer[i * 4]][0] = packetBuffer[i * 4 + 1];
+      current_rgb[packetBuffer[i * 4]][1] = packetBuffer[i * 4 + 2];
+      current_rgb[packetBuffer[i * 4]][2] = packetBuffer[i * 4 + 3];
+    }
+    for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
+      for (int i = strip_rgb[light][0]; i < strip_rgb[light][1] + 1; i++) {
+        leds_rgb[i] = CRGB((int) current_rgb[light][0], (int) current_rgb[light][1], (int) current_rgb[light][2]);
+      }
+    }
+    FastLED.show();
+  }
+}
 void loop() {
   ArduinoOTA.handle();
   server.handleClient();
-  lightEngine();
+  readIR();  
+  if (!entertainmentRun) {
+    lightEngine();
+  } else {
+    if ((millis() - lastEPMillis) >= entertainmentTimeout) {
+      entertainmentRun = false;
+      for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
+        process_lightdata(transitiontime, light);
+      }
+    }
+  }
+  entertainment();
+  
 }
