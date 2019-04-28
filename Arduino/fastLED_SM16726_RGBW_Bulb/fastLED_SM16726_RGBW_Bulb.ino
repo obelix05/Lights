@@ -70,11 +70,6 @@ byte mac[6];
 
 ESP8266WebServer server(80);
 
-// InfoLight doesn't seem to work...
-CRGB red = CRGB(255, 0, 0);
-CRGB green = CRGB(0, 255, 0);
-CRGB white = CRGB(255, 255, 255);
-CRGB black = CRGB(0, 0, 0);
 
 // Set up array for use by FastLED
 CRGB leds_rgb[NUM_LEDS];
@@ -94,12 +89,6 @@ void convert_xy(uint8_t light)
   float r =  X * 3.2406f - Y * 1.5372f - Z * 0.4986f;
   float g = -X * 0.9689f + Y * 1.8758f + Z * 0.0415f;
   float b =  X * 0.0557f - Y * 0.2040f + Z * 1.0570f;
-
-//  // Apply gamma correction v.2
-//  // Altering exponents at end can create different gamma curves
-//  r = r <= 0.04045f ? r / 12.92f : pow((r + 0.055f) / (1.0f + 0.055f), 2.4f);
-//  g = g <= 0.04045f ? g / 12.92f : pow((g + 0.055f) / (1.0f + 0.055f), 2.4f);
-//  b = b <= 0.04045f ? b / 12.92f : pow((b + 0.055f) / (1.0f + 0.055f), 2.4f);
 
   // Apply gamma correction v.1 (better color accuracy), try this first!
   r = r <= 0.0031308f ? 12.92f * r : (1.0f + 0.055f) * pow(r, (1.0f / 2.4f)) - 0.055f;
@@ -138,7 +127,6 @@ void convert_xy(uint8_t light)
   wwa[light][0] = 0;
   wwa[light][1] = 0;
   wwa[light][2] = 0;
-
 }
 
 void convert_ct(uint8_t light) {
@@ -313,7 +301,7 @@ void readIR() {
 
 void setup() {
   IRrecv.enableIRIn();
-  attachInterrupt(1, readIR, CHANGE);
+  
 
   FastLED.addLeds<LED_TYPE, DATA_PIN_RGB, COLOR_ORDER>(leds_rgb, NUM_LEDS).setCorrection( CORRECTION );
   FastLED.addLeds<LED_TYPE, DATA_PIN_WWA, COLOR_ORDER>(leds_wwa, NUM_LEDS).setCorrection( CORRECTION );
