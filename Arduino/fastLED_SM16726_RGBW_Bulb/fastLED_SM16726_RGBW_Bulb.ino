@@ -753,10 +753,14 @@ void entertainment() {
       current_rgb[packetBuffer[i * 4]][0] = packetBuffer[i * 4 + 1];
       current_rgb[packetBuffer[i * 4]][1] = packetBuffer[i * 4 + 2];
       current_rgb[packetBuffer[i * 4]][2] = packetBuffer[i * 4 + 3];
+      current_wwa[packetBuffer[i * 4]][0] = 0;
+      current_wwa[packetBuffer[i * 4]][1] = 0;
+      current_wwa[packetBuffer[i * 4]][2] = 0;
     }
     for (uint8_t light = 0; light < NUM_LIGHTS; light++) {
       for (int i = strip_rgb[light][0]; i < strip_rgb[light][1] + 1; i++) {
         leds_rgb[i] = CRGB((int) current_rgb[light][0], (int) current_rgb[light][1], (int) current_rgb[light][2]);
+        leds_wwa[i] = CRGB((int) current_wwa[light][0], (int) current_wwa[light][1], (int) current_wwa[light][2]);
       }
     }
     FastLED.show();
