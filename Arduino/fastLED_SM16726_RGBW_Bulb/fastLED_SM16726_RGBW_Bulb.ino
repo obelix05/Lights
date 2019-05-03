@@ -74,7 +74,7 @@ IPAddress subnet_mask(255, 255, 255,   0);
 
 uint8_t rgb[NUM_LIGHTS][3], wwa[NUM_LIGHTS][3], color_mode[NUM_LIGHTS], scene;
 bool light_state[NUM_LIGHTS], in_transition[NUM_LIGHTS], any_in_transition;
-int transitiontime, ct[NUM_LIGHTS], hue[NUM_LIGHTS], bri[NUM_LIGHTS], sat[NUM_LIGHTS];
+int ct[NUM_LIGHTS], hue[NUM_LIGHTS], bri[NUM_LIGHTS], sat[NUM_LIGHTS];
 float step_level_rgb[NUM_LIGHTS][3], step_level_wwa[NUM_LIGHTS][3], current_rgb[NUM_LIGHTS][3], current_wwa[NUM_LIGHTS][3], x[NUM_LIGHTS], y[NUM_LIGHTS];
 byte mac[6];
 
@@ -451,7 +451,7 @@ void setup() {
 
   server.on("/set", []() {
     uint8_t light;
-    float transitiontime = 4;
+    float transitiontime = 25.0;
     for (uint8_t i = 0; i < server.args(); i++) {
       if (server.argName(i) == "light") {
         light = server.arg(i).toInt() - 1;
@@ -574,7 +574,7 @@ void setup() {
   });
 
   server.on("/", []() {
-    float transitiontime = 100;
+    float transitiontime = 25;
     if (server.hasArg("startup")) {
       if (  EEPROM.read(1) != server.arg("startup").toInt()) {
         EEPROM.write(1, server.arg("startup").toInt());
