@@ -13,7 +13,8 @@
 #include <EEPROM.h>
 #include "Arduino.h"
 
-//#define RECV_PIN 15
+#define TV_WAND
+
 const uint16_t kRecvPin = 14;
 IRrecv IRrecv(kRecvPin);
 decode_results results;
@@ -26,9 +27,6 @@ bool entertainmentRun;
 byte packetBuffer[46];
 unsigned long lastEPMillis;
 
-//#define NUM_LEDS 9
-#define NUM_LEDS 341 // 1 led with 3 colors thanks to CRGB
-
 // Use Correction from fastLED library or not
 #define USE_F_LED_CC true
 
@@ -39,14 +37,21 @@ unsigned long lastEPMillis;
 
 float transitiontime = 25.0;
 
-// FastLED settings, data and clock pin for spi communication
-// Note that the protocol for SM16716 is the same for the SM16726
-#define DATA_PIN_RGB 4
-#define DATA_PIN_WWA 5
-//#define CLOCK_PIN 4
-#define COLOR_ORDER GRB
-#define LED_TYPE WS2812B
-#define CORRECTION TypicalSMD5050
+#ifdef TV_SCHRANK
+int strip_rgb[NUM_LIGHTS][2] = {
+    {0, 33},
+    {35, 69},
+    {71, 105}
+};
+
+int strip_wwa[NUM_LIGHTS][2] = {
+    {0, 33},
+    {35, 69},
+    {71, 105}
+};
+#endif
+#ifdef TV_WAND
+#define NUM_LEDS 341
 
 int strip_rgb[NUM_LIGHTS][2] = {
     {0, 108},
@@ -59,6 +64,22 @@ int strip_wwa[NUM_LIGHTS][2] = {
     {112, 229},
     {230, 340}
 };
+#endif
+#if !defined(TV_WAND) && !defined(TV_SCHRANK)
+#error No HW defined
+#endif
+
+
+// FastLED settings, data and clock pin for spi communication
+// Note that the protocol for SM16716 is the same for the SM16726
+#define DATA_PIN_RGB 4
+#define DATA_PIN_WWA 5
+//#define CLOCK_PIN 4
+#define COLOR_ORDER GRB
+#define LED_TYPE WS2812B
+#define CORRECTION TypicalSMD5050
+
+
 
 //#define USE_STATIC_IP //! uncomment to enable Static IP Adress
 #ifdef USE_STATIC_IP
@@ -408,7 +429,28 @@ void setup() {
 
   EEPROM.begin(512);
 
-#ifdef USE_STATIC_IP
+  WiFiManager wifiManager;
+  wifiManager.autoConnect("New Hue Light");
+
+  WiFi.macAddress(mac);
+
+  // Port defaults to 8266
+  // ArduinoOTA.setPort(8266);
+
+  // Hostname defaults to esp8266-[ChipID]
+#ifdef TV_SCHRANK
+  ArduinoOTA.setHostname("esp8266-tv-schrank");
+#endif
+#ifdef TV_WAND
+  ArduinoOTA.setHostname("esp8266-tv-wand");
+#endif
+  
+  // No authentication by default
+  // ArduinoOTA.setPassword((const char *)"123");
+
+  ArduinoOTA.begin();
+
+  #ifdef USE_STATIC_IP
   WiFi.config(strip_ip, gateway_ip, subnet_mask);
 #endif
 
@@ -416,7 +458,12 @@ void setup() {
     ct[light] = 500;
     convert_ct(light);
     color_mode[light] = COLORMODE_CT;
+#ifdef TV_SCHRANK
+    bri[light] = 25;
+#endif
+#ifdef TV_WAND
     bri[light] = 255;
+#endif
     light_state[light] = true;
     process_lightdata(transitiontime, light);
     in_transition[light] = true;
@@ -430,22 +477,6 @@ void setup() {
       any_in_transition |= in_transition[light];
     }
   }
-
-  WiFiManager wifiManager;
-  wifiManager.autoConnect("New Hue Light");
-
-  WiFi.macAddress(mac);
-
-  // Port defaults to 8266
-  // ArduinoOTA.setPort(8266);
-
-  // Hostname defaults to esp8266-[ChipID]
-  // ArduinoOTA.setHostname("myesp8266");
-
-  // No authentication by default
-  // ArduinoOTA.setPassword((const char *)"123");
-
-  ArduinoOTA.begin();
 
   Udp.begin(2100);
 
@@ -466,7 +497,12 @@ void setup() {
             ct[light] = 500;
             convert_ct(light);
             color_mode[light] = COLORMODE_CT;
+#ifdef TV_SCHRANK
+            bri[light] = 25;
+#endif
+#ifdef TV_WAND
             bri[light] = 255;
+#endif
             process_lightdata(transitiontime, light);
             in_transition[light] = true;
           }
@@ -570,7 +606,12 @@ void setup() {
 
 
   server.on("/detect", []() {
+#ifdef TV_SCHRANK
+    server.send(200, "text/plain", "{\"hue\": \"strip\",\"lights\": 3,\"name\": \"TV-Schrank\",\"modelid\": \"LST002\",\"mac\": \"" + String(mac[5], HEX) + ":"  + String(mac[4], HEX) + ":" + String(mac[3], HEX) + ":" + String(mac[2], HEX) + ":" + String(mac[1], HEX) + ":" + String(mac[0], HEX) + "\"}");
+#endif
+#ifdef TV_WAND
     server.send(200, "text/plain", "{\"hue\": \"strip\",\"lights\": 3,\"name\": \"TV-Wand\",\"modelid\": \"LST002\",\"mac\": \"" + String(mac[5], HEX) + ":"  + String(mac[4], HEX) + ":" + String(mac[3], HEX) + ":" + String(mac[2], HEX) + ":" + String(mac[1], HEX) + ":" + String(mac[0], HEX) + "\"}");
+#endif
   });
 
   server.on("/", []() {
